@@ -1,10 +1,12 @@
 """AI Small Business Opportunity Finder - single-file Streamlit app."""
 import json
+import time
 import streamlit as st
 from google import genai
 from google.genai import types
 
-MODEL = "gemini-3.8-flash"  # change here if Google retires this model
+MODEL = "gemini-3.8-flash"  # main model: change here if Google retires it
+FALLBACK_MODELS = ["gemini-3.8-flash-lite"]  # tried if the main model is busy (edit if a name stops working)
 
 st.set_page_config(page_title="AI Business Opportunity Finder", page_icon="💡", layout="wide")
 
@@ -50,14 +52,25 @@ Return ONLY JSON in this shape:
 "sim_defaults":{{"price":0,"daily_sales":0,"cost_per_unit":0,"other_monthly_expenses":0}}}}]}}"""
 
 def generate_ideas(client, user):
-    """Call Gemini and return the list of ideas."""
-    response = client.models.generate_content(
-        model=MODEL,
-        contents=build_prompt(user),
-        config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.7),
-    )
-    text = response.text.strip().removeprefix("```json").removesuffix("```").strip()
-    return json.loads(text)["ideas"]
+    """Call Gemini and return the list of ideas.
+    If the model is busy (503) we wait and retry, then try backup models."""
+    config = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.7)
+    last_error = None
+    for model in [MODEL] + FALLBACK_MODELS:
+        for attempt in range(3):  # up to 3 tries per model
+            try:
+                response = client.models.generate_content(model=model, contents=build_prompt(user), config=config)
+                text = response.text.strip().removeprefix("```json").removesuffix("```").strip()
+                return json.loads(text)["ideas"]
+            except Exception as ex:
+                last_error = ex
+                msg = str(ex)
+                busy = "503" in msg or "UNAVAILABLE" in msg or "429" in msg
+                if busy and attempt < 2:
+                    time.sleep(2 ** (attempt + 1))  # wait 2s, then 4s
+                    continue
+                break  # other error or out of retries: move to the next model
+    raise last_error
 
 def num(value, default=0.0):
     """Safely turn AI output into a number."""
