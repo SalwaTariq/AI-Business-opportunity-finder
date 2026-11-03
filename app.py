@@ -4,7 +4,7 @@ import streamlit as st
 from google import genai
 from google.genai import types
 
-MODEL = "gemini-2.5-flash"  # change here if Google retires this model
+MODEL = "gemini-3.8-flash"  # change here if Google retires this model
 
 st.set_page_config(page_title="AI Business Opportunity Finder", page_icon="💡", layout="wide")
 
