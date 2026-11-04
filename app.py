@@ -6,7 +6,6 @@ from google import genai
 from google.genai import types
 
 MODEL = "gemini-3.8-flash"  # main model: change here if Google retires it
-FALLBACK_MODELS = ["gemini-3.8-flash-lite"]  # tried if the main model is busy (edit if a name stops working)
 
 st.set_page_config(page_title="AI Business Opportunity Finder", page_icon="💡", layout="wide")
 
@@ -51,26 +50,42 @@ Return ONLY JSON in this shape:
 "advantages":"","challenges":"","differentiation":""}},
 "sim_defaults":{{"price":0,"daily_sales":0,"cost_per_unit":0,"other_monthly_expenses":0}}}}]}}"""
 
+def try_model(client, model, user, config):
+    """Ask one model for ideas. Retries 4 times (waits 2s, 4s, 8s) if it is busy."""
+    for attempt in range(4):
+        try:
+            response = client.models.generate_content(model=model, contents=build_prompt(user), config=config)
+            text = response.text.strip().removeprefix("```json").removesuffix("```").strip()
+            return json.loads(text)["ideas"]
+        except Exception as ex:
+            msg = str(ex)
+            busy = "503" in msg or "UNAVAILABLE" in msg or "429" in msg
+            if busy and attempt < 3:
+                time.sleep(2 ** (attempt + 1))
+                continue
+            raise
+
+def backup_models(client):
+    """Ask Google which other Flash models are available (so we never guess names)."""
+    try:
+        names = [m.name.replace("models/", "") for m in client.models.list()
+                 if "generateContent" in (m.supported_actions or []) and "flash" in m.name.lower()]
+        return [n for n in names if n != MODEL][:2]
+    except Exception:
+        return []
+
 def generate_ideas(client, user):
-    """Call Gemini and return the list of ideas.
-    If the model is busy (503) we wait and retry, then try backup models."""
+    """Try the main model first. If it keeps failing, try backup Flash models."""
     config = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.7)
-    last_error = None
-    for model in [MODEL] + FALLBACK_MODELS:
-        for attempt in range(3):  # up to 3 tries per model
+    try:
+        return try_model(client, MODEL, user, config)
+    except Exception as main_error:
+        for model in backup_models(client):
             try:
-                response = client.models.generate_content(model=model, contents=build_prompt(user), config=config)
-                text = response.text.strip().removeprefix("```json").removesuffix("```").strip()
-                return json.loads(text)["ideas"]
-            except Exception as ex:
-                last_error = ex
-                msg = str(ex)
-                busy = "503" in msg or "UNAVAILABLE" in msg or "429" in msg
-                if busy and attempt < 2:
-                    time.sleep(2 ** (attempt + 1))  # wait 2s, then 4s
-                    continue
-                break  # other error or out of retries: move to the next model
-    raise last_error
+                return try_model(client, model, user, config)
+            except Exception:
+                continue
+        raise main_error  # show the real error from the main model
 
 def num(value, default=0.0):
     """Safely turn AI output into a number."""
